@@ -1,3 +1,6 @@
+#data files
+*.csv
+HC_DATA/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
