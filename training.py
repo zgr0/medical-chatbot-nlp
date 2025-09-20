@@ -1,7 +1,20 @@
 from tqdm.auto import tqdm
 
 print("[INFO] Importing libraries...")
+# Set CUDA device settings for memory efficiency
 import torch  # PyTorch for deep learning
+torch.cuda.empty_cache()  # Clear GPU memory before starting
+torch.backends.cudnn.benchmark = True  # Enable cudnn autotuner
+
+# Set memory growth for better memory management
+try:
+    import tensorflow as tf
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+except:
+    pass  # Ignore if TensorFlow is not properly installed
 import numpy as np  # NumPy for numerical operations
 import pandas as pd  # Pandas for data manipulation
 import re  # Regular expressions for text processing
@@ -218,17 +231,17 @@ def main():
     train_dataset = train_dataset.map(
         preprocess_function,
         batched=True,
-        batch_size=32,  # Process in batches of 32
+        batch_size=16,  # Reduced preprocessing batch size
         remove_columns=train_dataset.column_names,  # Remove original columns
-        num_proc=4,  # Use 4 processes for parallel processing
+        num_proc=2,  # Reduced number of processes for laptop efficiency
     )
 
     val_dataset = val_dataset.map(
         preprocess_function,
         batched=True,
-        batch_size=32,  # Process in batches of 32
+        batch_size=16,  # Reduced preprocessing batch size
         remove_columns=val_dataset.column_names,  # Remove original columns
-        num_proc=4,  # Use 4 processes for parallel processing
+        num_proc=2,  # Reduced number of processes for laptop efficiency
     )
 
     # Define training arguments
@@ -238,24 +251,26 @@ def main():
         save_total_limit=2,  # Keep only the last 2 checkpoints
         learning_rate=5e-4,  # Learning rate
         num_train_epochs=5,  # Number of training epochs
-        per_device_train_batch_size=8,  # Batch size for training
-        per_device_eval_batch_size=8,  # Batch size for evaluation
+        per_device_train_batch_size=4,  # Reduced batch size for training
+        per_device_eval_batch_size=4,  # Reduced batch size for evaluation
         lr_scheduler_type="cosine_with_restarts",  # Learning rate scheduler
         warmup_ratio=0.1,  # Warmup ratio for the scheduler
         weight_decay=0.05,  # Weight decay for regularization
         predict_with_generate=True,  # Generate predictions during evaluation
         fp16=True,  # Use mixed precision for faster training
+        bf16=False,  # Disable bfloat16 as it's not optimal for RTX 4060
         logging_dir="./logs",  # Directory for logs
         logging_steps=50,  # Log every 50 steps
         metric_for_best_model="exact_match",  # Use exact match as the primary metric
         greater_is_better=True,  # Higher exact match is better
         report_to="none",  # Disable external reporting
-        gradient_accumulation_steps=2,  # Accumulate gradients over 2 steps
+        gradient_accumulation_steps=4,  # Increased gradient accumulation for memory efficiency
         max_grad_norm=0.5,  # Gradient clipping
         optim="adamw_torch_fused",  # Use fused AdamW optimizer
         generation_max_length=64,  # Maximum length for generated text
         generation_num_beams=6,  # Number of beams for beam search
-        dataloader_num_workers=4,  # Number of workers for data loading
+        dataloader_num_workers=2,  # Reduced number of workers for laptop efficiency
+        dataloader_pin_memory=True,  # Enable pin memory for faster data transfer
         group_by_length=True,  # Group sequences by length for efficiency
         remove_unused_columns=True,  # Remove unused columns from the dataset
         label_smoothing_factor=0.1,  # Apply label smoothing
