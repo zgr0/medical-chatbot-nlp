@@ -1,3 +1,17 @@
+# Model files and directories
+t5_chatbot_model/
+t5_chatbot_tokenizer/
+t5_chatbot_model.h5
+*.h5
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# Training outputs
+results/
+logs/
+
 #data files
 *.csv
 HC_DATA/
