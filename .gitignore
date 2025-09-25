@@ -1,6 +1,7 @@
 # Model files and directories
 t5_chatbot_model/
 t5_chatbot_tokenizer/
+t5_chatbot_peft_adapter/
 t5_chatbot_model.h5
 *.h5
 *.safetensors
@@ -11,6 +12,11 @@ t5_chatbot_model.h5
 # Training outputs
 results/
 logs/
+model_comparison_results.csv
+
+# PEFT related
+lora_experiments/
+adapter_config.json
 
 #data files
 *.csv

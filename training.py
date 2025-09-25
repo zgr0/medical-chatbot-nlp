@@ -30,6 +30,15 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration, Seq2SeqTrainin
 from transformers import Seq2SeqTrainer, DataCollatorForSeq2Seq, TrainerCallback, T5Config
 from transformers.models.t5.modeling_t5 import T5Attention, T5LayerSelfAttention
 
+# Import Parameter-Efficient Fine-Tuning (PEFT) components
+from peft import (
+    get_peft_model, 
+    LoraConfig, 
+    PrefixTuningConfig, 
+    TaskType,
+    prepare_model_for_kbit_training
+)
+
 # Import Flash Attention
 try:
     from flash_attn import flash_attn_func
@@ -278,6 +287,94 @@ def replace_attention_with_flash(model):
     return model
 
 
+def apply_parameter_efficient_tuning(model, method="lora", freeze_base_model=True):
+    """
+    Apply parameter-efficient fine-tuning to the model.
+    
+    Args:
+        model: The model to apply parameter-efficient fine-tuning to
+        method: Either "lora" for Low-Rank Adaptation or "prompt" for Prompt Tuning
+        freeze_base_model: Whether to freeze the base model parameters
+        
+    Returns:
+        PEFT model with parameter-efficient tuning applied
+    """
+    # Import needed modules
+    import os
+    import json
+    
+    # Prepare the model for parameter-efficient tuning
+    if freeze_base_model:
+        print("[INFO] Freezing base model parameters...")
+        for param in model.parameters():
+            param.requires_grad = False
+    
+    if method == "lora":
+        print("[INFO] Applying LoRA (Low-Rank Adaptation)...")
+        
+        # Check if a LoRA config file is specified in the environment
+        lora_config_path = os.environ.get("LORA_CONFIG_PATH")
+        
+        if lora_config_path and os.path.exists(lora_config_path):
+            # Load LoRA config from file
+            print(f"[INFO] Loading LoRA config from {lora_config_path}")
+            with open(lora_config_path, 'r') as f:
+                lora_params = json.load(f)
+            
+            lora_config = LoraConfig(
+                task_type=TaskType.SEQ_2_SEQ_LM,
+                r=lora_params.get("r", 16),
+                lora_alpha=lora_params.get("lora_alpha", 32),
+                lora_dropout=lora_params.get("lora_dropout", 0.05),
+                target_modules=lora_params.get("target_modules", ["q", "v"]),
+                bias=lora_params.get("bias", "none"),
+            )
+            print(f"[INFO] Using custom LoRA config: r={lora_config.r}, alpha={lora_config.lora_alpha}, "
+                 f"dropout={lora_config.lora_dropout}, target_modules={lora_config.target_modules}")
+        else:
+            # Configure LoRA for T5 with default settings
+            lora_config = LoraConfig(
+                task_type=TaskType.SEQ_2_SEQ_LM,
+                r=16,                     # Low-rank dimension
+                lora_alpha=32,            # Alpha scaling factor
+                lora_dropout=0.05,        # Dropout probability for LoRA layers
+                target_modules=["q", "v"], # Apply LoRA to query and value projection matrices
+                bias="none",              # Don't train bias parameters
+            )
+        
+        # Apply LoRA to the model
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()  # Print trainable parameters percentage
+        
+        print("[INFO] LoRA implementation complete!")
+        
+    elif method == "prompt":
+        print("[INFO] Applying Prompt Tuning...")
+        
+        # Get prompt tuning parameters from environment if available
+        num_virtual_tokens = int(os.environ.get("PROMPT_TUNING_NUM_TOKENS", "20"))
+        use_prefix_projection = os.environ.get("PROMPT_TUNING_PREFIX_PROJ", "True").lower() == "true"
+        
+        # Configure Prompt Tuning for T5
+        prompt_config = PrefixTuningConfig(
+            task_type=TaskType.SEQ_2_SEQ_LM,
+            num_virtual_tokens=num_virtual_tokens,
+            encoder_hidden_size=model.config.hidden_size,
+            prefix_projection=use_prefix_projection,
+        )
+        
+        # Apply Prompt Tuning to the model
+        model = get_peft_model(model, prompt_config)
+        model.print_trainable_parameters()  # Print trainable parameters percentage
+        
+        print(f"[INFO] Prompt Tuning implementation complete with {num_virtual_tokens} virtual tokens!")
+        
+    else:
+        print(f"[WARNING] Unknown method: {method}. Using full model fine-tuning.")
+    
+    return model
+
+
 
 # Custom callback to show a tqdm progress bar during training
 class TQDMProgressBarCallback(TrainerCallback):
@@ -300,6 +397,22 @@ class TQDMProgressBarCallback(TrainerCallback):
 
 # Main execution logic
 def main():
+    # Check for environment variables to override settings
+    import os
+    import json
+    
+    # Get output directory from environment variable
+    output_dir = os.environ.get("TRAINING_OUTPUT_DIR", "./t5_chatbot_model")
+    num_epochs = int(os.environ.get("NUM_EPOCHS", "3"))
+    batch_size = int(os.environ.get("BATCH_SIZE", "4"))
+    peft_method = os.environ.get("USE_PEFT", "none").lower()
+    
+    print(f"[INFO] Training Configuration:")
+    print(f"[INFO] - Output Directory: {output_dir}")
+    print(f"[INFO] - Number of Epochs: {num_epochs}")
+    print(f"[INFO] - Batch Size: {batch_size}")
+    print(f"[INFO] - PEFT Method: {peft_method}")
+    
     print("[INFO] If you see a warning about 'tf.losses.sparse_softmax_cross_entropy', use 'tf.compat.v1.losses.sparse_softmax_cross_entropy' instead.")
     
     # Print Flash Attention status
@@ -392,6 +505,15 @@ def main():
     # Apply Flash Attention 2 optimization
     print("[INFO] Applying Memory-Efficient Attention to the model...")
     model = replace_attention_with_flash(model)
+    
+    # Apply parameter-efficient fine-tuning if specified in environment variables
+    # peft_method will be "lora", "prompt" or "none" based on environment variable
+    if peft_method in ["lora", "prompt"]:
+        print(f"[INFO] Applying parameter-efficient fine-tuning: {peft_method}")
+        model = apply_parameter_efficient_tuning(model, method=peft_method, freeze_base_model=True)
+    else:
+        print("[INFO] Using full fine-tuning (no parameter-efficient tuning)")
+    
     # Keep model in FP32 for initial stability
     if torch.cuda.is_available():
         model = model.cuda()
@@ -486,13 +608,13 @@ def main():
 
     # Define training arguments (with FP16 stability fixes)
     training_args = Seq2SeqTrainingArguments(
-        output_dir="./results",  # Directory to save the model and results
+        output_dir=output_dir,  # Use the output directory from environment variable
         eval_strategy="epoch",  # Evaluate after each epoch
         save_total_limit=2,  # Keep only the last 2 checkpoints
         learning_rate=5e-5,  # Even lower learning rate for FP16 stability
-        num_train_epochs=5,  # Number of training epochs
-        per_device_train_batch_size=2,  # Smaller batch size for stability
-        per_device_eval_batch_size=2,  # Smaller batch size for evaluation
+        num_train_epochs=num_epochs,  # Use number of epochs from environment variable
+        per_device_train_batch_size=batch_size,  # Use batch size from environment variable
+        per_device_eval_batch_size=batch_size,  # Use same batch size for evaluation
         lr_scheduler_type="linear",  # Linear scheduler instead of cosine for stability
         warmup_ratio=0.1,  # Warmup ratio for the scheduler
         weight_decay=0.01,  # Lower weight decay for FP16 stability
@@ -602,12 +724,27 @@ def main():
     # Train the model
     trainer.train()
 
+    # Save the PEFT adapter (if using parameter-efficient fine-tuning)
+    if hasattr(model, 'save_pretrained'):
+        peft_adapter_dir = os.path.join(output_dir, "peft_adapter")
+        print(f"[INFO] Saving PEFT adapter to {peft_adapter_dir}...")
+        os.makedirs(peft_adapter_dir, exist_ok=True)
+        model.save_pretrained(peft_adapter_dir)
+    
     # Save the trained model and tokenizer
-    trainer.save_model("./t5_chatbot_model")
-    tokenizer.save_pretrained("./t5_chatbot_tokenizer")
+    model_dir = os.path.join(output_dir, "model")
+    tokenizer_dir = os.path.join(output_dir, "tokenizer")
+    print(f"[INFO] Saving model to {model_dir}...")
+    os.makedirs(model_dir, exist_ok=True)
+    trainer.save_model(model_dir)
+    
+    print(f"[INFO] Saving tokenizer to {tokenizer_dir}...")
+    os.makedirs(tokenizer_dir, exist_ok=True)
+    tokenizer.save_pretrained(tokenizer_dir)
 
     # Save the model's state dictionary
-    model_path = "./t5_chatbot_model.h5"
+    model_path = os.path.join(output_dir, "model.h5")
+    print(f"[INFO] Saving model state dictionary to {model_path}...")
     torch.save(model.state_dict(), model_path)
 
     # Save the training log history
